@@ -1,21 +1,64 @@
 package cli
 
-import "github.com/spf13/cobra"
+import (
+	"fmt"
+
+	"github.com/nebucloud/ssf/pkg/artifact"
+	"github.com/spf13/cobra"
+)
 
 func newVerifyCommand() *cobra.Command {
+	var keyRef string
+
 	cmd := &cobra.Command{
 		Use:   "verify <artifact>",
 		Short: "Verify an artifact signature with cosign",
-		Long: `Verify an artifact signature using cosign verify or cosign verify-blob.
+		Long: `Verify an artifact signature using cosign verify-blob.
 
-Mirrors the dispatch in 'ssf sign': OCI artifacts use cosign verify against
-the sibling signature in the registry; everything else uses cosign verify-blob
-against the conventionally-located <path>.sig file.
+Mirrors the sign dispatch — Phase 2.4b only wires the binary type, which
+shells to ` + "`cosign verify-blob`" + ` against the conventionally-located
+<path>.sig sidecar.
 
-Without --key, ssf uses the same Cosign default key discovery as 'ssf sign'.`,
+Without --key, cosign uses the same default key discovery as ` + "`ssf sign`" + `.`,
 		Args: cobra.ExactArgs(1),
-		RunE: notImplemented("2.4b"),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runVerify(args[0], keyRef)
+		},
 	}
-	cmd.Flags().String("key", "", "verification key reference (cosign | vault://path | fulcio | file://path)")
+	cmd.Flags().StringVar(&keyRef, "key", "", "verification key reference (cosign | vault://path | fulcio | file://path)")
 	return cmd
+}
+
+func runVerify(path, keyRef string) error {
+	bin, err := artifact.NewBinary(path)
+	if err != nil {
+		return err
+	}
+
+	cosignKey, err := translateKey(keyRef)
+	if err != nil {
+		return err
+	}
+	if cosignKey == "" {
+		// cosign verify-blob requires --key for keyed signatures; if the
+		// user didn't supply one and we can't derive a default, fail
+		// fast with a clear hint instead of cosign's generic error.
+		return fmt.Errorf("verify requires --key (e.g., --key cosign.pub or --key file:///path/to/cosign.pub)")
+	}
+
+	args := []string{
+		"verify-blob",
+		"--key", cosignKey,
+		"--signature", bin.SignaturePath(),
+		bin.Reference(),
+	}
+
+	if err := runCosign(args...); err != nil {
+		return err
+	}
+
+	fmt.Printf("verified %s\n", bin.Reference())
+	fmt.Printf("  digest:    %s\n", bin.Digest())
+	fmt.Printf("  signature: %s\n", bin.SignaturePath())
+	return nil
 }
