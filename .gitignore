@@ -1,0 +1,17 @@
+# compiled binary
+/ssf
+
+# go test artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# os
+.DS_Store
