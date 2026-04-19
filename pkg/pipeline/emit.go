@@ -3,8 +3,10 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
+	"github.com/nebucloud/ssf/pkg/artifact"
 	"github.com/nebucloud/ssf/pkg/kiln"
 )
 
@@ -17,6 +19,12 @@ import (
 // bare name. Per SSF-ARCH-overview §8.1, the v1 contract is "tools must be on
 // PATH" — kiln inherits PATH into its sandbox and the bash run blocks call the
 // tools by name. World Builder–provisioned tools land in a future phase.
+//
+// All path-like strings (artifact reference for local types, file:// signing
+// keys, sbom output, predicate sources, policy paths) are resolved to absolute
+// paths against the caller's cwd. Required because kiln executes each target
+// in a per-target sandbox cwd (/tmp/kiln-sandbox-XXX-N-NAME), so relative
+// paths from ssf.yaml would not resolve.
 //
 // Returns an error if a step references a state that no earlier step produced
 // (e.g., an attest step listing an sbom predicate when no sbom step ran).
@@ -42,10 +50,12 @@ func EmitKilnManifest(p *Pipeline) (*kiln.Pipeline, error) {
 	counts := make(map[StepKind]int)
 
 	// Scratch state shared across emit functions: artifact ref + signing
-	// key both come from top-level pipeline fields, not per-step.
+	// key both come from top-level pipeline fields, not per-step. Resolve
+	// to absolute paths now so each per-target sandbox cwd doesn't break
+	// references — see the per-target sandbox note in the function doc.
 	state := emitState{
-		artifactRef: p.Artifact.Reference,
-		signingKey:  p.Signing.Key,
+		artifactRef: absolutizeIfLocal(p.Artifact.Type, p.Artifact.Reference),
+		signingKey:  absolutizeKey(p.Signing.Key),
 		sbomPath:    "", // set by sbom step if it runs
 	}
 
@@ -88,11 +98,12 @@ func canonicalName(kind StepKind, occurrence int) string {
 func emitStep(step Step, name string, state *emitState, produced map[StepKind]string) (kiln.Target, error) {
 	switch step.Step {
 	case StepSBOM:
-		state.sbomPath = step.Output
+		sbomOut := absolutizePath(step.Output)
+		state.sbomPath = sbomOut
 		return kiln.Target{
 			Run: kiln.ShellBlock{
 				Interpreter: "bash",
-				Code:        fmt.Sprintf("syft %s -o %s-json > %s", shellQuote(state.artifactRef), step.Format, shellQuote(step.Output)),
+				Code:        fmt.Sprintf("syft %s -o %s-json > %s", shellQuote(state.artifactRef), step.Format, shellQuote(sbomOut)),
 			},
 			Inputs:  []string{"artifact_ref"},
 			Outputs: []string{"sbom_path"},
@@ -113,11 +124,19 @@ func emitStep(step Step, name string, state *emitState, produced map[StepKind]st
 		if !ok {
 			return kiln.Target{}, fmt.Errorf("verify step requires a prior sign step")
 		}
+		// --insecure-ignore-tlog is required when verifying without
+		// having uploaded to Rekor — cosign 2.x defaults to demanding
+		// a transparency log entry. The log step (when present) handles
+		// the upload separately; if the user wants Rekor-backed
+		// verification they should add a `log` step after `sign`.
 		return kiln.Target{
 			Requires: []string{signTarget},
 			Run: kiln.ShellBlock{
 				Interpreter: "bash",
-				Code:        fmt.Sprintf("cosign verify-blob --key %s --signature %s.sig %s", shellQuote(translateKeyForShell(state.signingKey)), shellQuote(state.artifactRef), shellQuote(state.artifactRef)),
+				Code: fmt.Sprintf("cosign verify-blob --insecure-ignore-tlog --key %s --signature %s.sig %s",
+					shellQuote(verifyKeyForShell(state.signingKey)),
+					shellQuote(state.artifactRef),
+					shellQuote(state.artifactRef)),
 			},
 			Inputs: []string{"artifact_ref", "signing_key"},
 		}, nil
@@ -148,13 +167,13 @@ func emitStep(step Step, name string, state *emitState, produced map[StepKind]st
 				predLines = append(predLines,
 					fmt.Sprintf("cosign attest-blob --yes --key %s --predicate %s --type spdxjson %s",
 						shellQuote(translateKeyForShell(state.signingKey)),
-						shellQuote(pred.Source),
+						shellQuote(absolutizePath(pred.Source)),
 						shellQuote(state.artifactRef)))
 			case PredicateCustom:
 				predLines = append(predLines,
 					fmt.Sprintf("cosign attest-blob --yes --key %s --predicate %s --type custom %s",
 						shellQuote(translateKeyForShell(state.signingKey)),
-						shellQuote(pred.Source),
+						shellQuote(absolutizePath(pred.Source)),
 						shellQuote(state.artifactRef)))
 			}
 		}
@@ -200,7 +219,7 @@ func emitStep(step Step, name string, state *emitState, produced map[StepKind]st
 		}
 		var policyArgs []string
 		for _, p := range step.Policies {
-			policyArgs = append(policyArgs, shellQuote(p))
+			policyArgs = append(policyArgs, shellQuote(absolutizePath(p)))
 		}
 		return kiln.Target{
 			Requires: requires,
@@ -216,6 +235,49 @@ func emitStep(step Step, name string, state *emitState, produced map[StepKind]st
 	}
 
 	return kiln.Target{}, fmt.Errorf("emit: unhandled step kind %q", step.Step)
+}
+
+// absolutizeIfLocal resolves ref to an absolute path when the artifact type
+// addresses a local file (binary, derivation, blob). For registry-hosted
+// types (oci, crate, npm) the reference is a coordinate, not a path —
+// returned unchanged.
+func absolutizeIfLocal(t artifact.Type, ref string) string {
+	switch t {
+	case artifact.TypeBinary, artifact.TypeDerivation, artifact.TypeBlob:
+		if abs, err := filepath.Abs(ref); err == nil {
+			return abs
+		}
+	}
+	return ref
+}
+
+// absolutizeKey resolves a `file://path` signing key reference to an absolute
+// `file:///abs/path` form so the bash run blocks in the kiln manifest can find
+// the key from any sandbox cwd. Other key forms (cosign default, vault://,
+// fulcio, KMS URIs) are returned unchanged — they're already absolute.
+func absolutizeKey(key string) string {
+	if !strings.HasPrefix(key, "file://") {
+		return key
+	}
+	rel := strings.TrimPrefix(key, "file://")
+	abs, err := filepath.Abs(rel)
+	if err != nil {
+		return key
+	}
+	return "file://" + abs
+}
+
+// absolutizePath resolves any path string to absolute against cwd. Used for
+// per-step paths (sbom output, predicate source, policy file) that flow into
+// the emitted bash run blocks.
+func absolutizePath(p string) string {
+	if p == "" {
+		return p
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
 }
 
 // translateKeyForShell maps SSF's --key surface (the same one in
@@ -235,6 +297,23 @@ func translateKeyForShell(raw string) string {
 	default:
 		return raw
 	}
+}
+
+// verifyKeyForShell maps an SSF signing key reference to the matching public
+// key cosign verify-blob needs. For local file keys this swaps the .key
+// extension for .pub by convention; for KMS / vault URIs the same reference
+// addresses both halves of the keypair.
+func verifyKeyForShell(signingKey string) string {
+	signing := translateKeyForShell(signingKey)
+	if signing == "" {
+		return signing
+	}
+	if strings.HasSuffix(signing, ".key") {
+		return strings.TrimSuffix(signing, ".key") + ".pub"
+	}
+	// vault://, KMS URIs, fulcio identifiers — pass through untouched
+	// since the same reference handles both sign and verify there.
+	return signing
 }
 
 // shellQuote wraps a value in single quotes for safe interpolation into a
