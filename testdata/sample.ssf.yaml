@@ -1,0 +1,43 @@
+# Sample SSF pipeline — exercise this against the SSF binary itself.
+#
+# Build first:
+#     go build -o ssf ./cmd/ssf
+#     cosign generate-key-pair                                 # if you don't have keys
+#
+# Pre-flight (no kiln required):
+#     ssf run --dry-run testdata/sample.ssf.yaml
+#
+# Full execution (needs kiln + cosign + syft on PATH):
+#     ssf run testdata/sample.ssf.yaml
+#
+# See SSF-SPEC-ssf-yaml for the full schema reference.
+
+version: "1"
+
+artifact:
+  type: binary
+  reference: "./ssf"
+
+signing:
+  key: file://cosign.key
+
+pipeline:
+  - step: sbom
+    format: spdx
+    output: ssf.spdx.json
+
+  - step: sign
+
+  - step: verify
+
+  - step: attest
+    predicates:
+      - type: sbom
+        source: ssf.spdx.json
+
+policy:
+  fail_open: false
+
+output:
+  report: ssf-report.json
+  format: json
