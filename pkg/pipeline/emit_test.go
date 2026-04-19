@@ -49,8 +49,12 @@ pipeline:
 	if !strings.Contains(signTarget.Run.Code, "cosign.key") {
 		t.Errorf("Run.Code missing key path 'cosign.key': %q", signTarget.Run.Code)
 	}
-	if !strings.Contains(signTarget.Run.Code, "./out/sample") {
-		t.Errorf("Run.Code missing artifact ref './out/sample': %q", signTarget.Run.Code)
+	// Absolutized — kiln runs each target in /tmp/kiln-sandbox-XXX so
+	// relative paths from ssf.yaml get resolved against the caller's cwd
+	// at emit time. Match on the trailing component so the test isn't
+	// coupled to the test-runner's working directory.
+	if !strings.Contains(signTarget.Run.Code, "out/sample") {
+		t.Errorf("Run.Code missing artifact ref ending in 'out/sample': %q", signTarget.Run.Code)
 	}
 }
 
