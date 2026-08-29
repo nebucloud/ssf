@@ -89,11 +89,14 @@ func (b *Binary) Reference() string { return b.path }
 // because metadata is rarely large and policy evaluation is read-only.)
 func (b *Binary) Metadata() map[string]string { return b.metadata }
 
-// SignaturePath returns the conventional location of the cosign blob signature
-// for this binary: the file path with ".sig" appended. Used by the sign
-// subcommand as the default --output-signature target and by verify as the
-// default --signature input.
+// SignaturePath returns the legacy raw-signature sidecar path (path + ".sig").
+// Cosign v3 prefers [BundlePath] for sign-blob / verify-blob; this remains for
+// rekor-cli hashedrekord uploads and older tooling that still expect a .sig.
 func (b *Binary) SignaturePath() string { return b.path + ".sig" }
+
+// BundlePath returns the cosign v3 Sigstore bundle path (path + ".sigstore.json").
+// Used by sign-blob --bundle and verify-blob --bundle.
+func (b *Binary) BundlePath() string { return b.path + ".sigstore.json" }
 
 // sha256File streams the file at path through a sha256 hasher without loading
 // the full contents into memory. Returns the digest in the form expected by

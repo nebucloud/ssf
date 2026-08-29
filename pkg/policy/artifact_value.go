@@ -57,16 +57,21 @@ func constructArtifactValue(art artifact.Artifact) (*artifactValue, error) {
 		v.Metadata = map[string]string{}
 	}
 
-	// Detect signing state by looking for the conventional .sig sidecar.
-	// For binary artifacts, the path is artifact.Reference() + ".sig"
-	// (set by ssf sign). Other artifact types will need their own
-	// detection logic when their dispatch lands.
-	sigPath := art.Reference() + ".sig"
-	if info, err := os.Stat(sigPath); err == nil && info.Mode().IsRegular() {
+	// Detect signing state via cosign v3 bundle (.sigstore.json) or legacy
+	// .sig sidecar. Binary artifacts use Reference() + suffix (set by ssf sign).
+	sigPath := ""
+	for _, suffix := range []string{".sigstore.json", ".sig"} {
+		candidate := art.Reference() + suffix
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+			sigPath = candidate
+			break
+		}
+	}
+	if sigPath != "" {
 		v.Signed = true
 		v.Signature = &signatureValue{
 			// Cosign blob signatures don't carry keyId / algorithm in
-			// the .sig itself; they live in the bundle / certificate.
+			// the sidecar itself; they live in the bundle / certificate.
 			// Use placeholder values that schema.cue accepts so policies
 			// keying on signature presence pass without forcing every
 			// policy to reach into bundle metadata. Real values land

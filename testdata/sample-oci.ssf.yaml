@@ -1,0 +1,43 @@
+# Sample OCI pipeline — sign a published container image.
+#
+# Prerequisites:
+#   - image pushed to a registry (digest resolvable via crane or docker)
+#   - cosign keypair: cosign generate-key-pair
+#   - optional: kiln + syft on PATH for full `ssf run`
+#
+# Dry-run (no registry needed for emit):
+#     ssf run --dry-run testdata/sample-oci.ssf.yaml
+#
+# Sign only:
+#     ssf sign --key file://cosign.key ghcr.io/your-org/nexus-console:v0.1.0
+#     ssf verify --key file://cosign.pub ghcr.io/your-org/nexus-console:v0.1.0
+
+version: "1"
+
+artifact:
+  type: oci
+  reference: "phoenixvlabs/nexus-console:v0.1.0"
+
+signing:
+  key: file://cosign.key
+
+pipeline:
+  - step: sbom
+    format: spdx
+    output: nexus-console.spdx.json
+
+  - step: sign
+
+  - step: verify
+
+  - step: attest
+    predicates:
+      - type: sbom
+        source: nexus-console.spdx.json
+
+policy:
+  fail_open: false
+
+output:
+  report: ssf-oci-report.json
+  format: json
