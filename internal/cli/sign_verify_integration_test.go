@@ -43,9 +43,9 @@ func TestSignVerify_RoundTrip(t *testing.T) {
 		if err := runSign(binPath, "file://"+privKey); err != nil {
 			t.Fatalf("runSign: %v", err)
 		}
-		sigPath := binPath + ".sig"
+		sigPath := binPath + ".sigstore.json"
 		if _, err := os.Stat(sigPath); err != nil {
-			t.Fatalf("expected signature at %s: %v", sigPath, err)
+			t.Fatalf("expected bundle at %s: %v", sigPath, err)
 		}
 	})
 

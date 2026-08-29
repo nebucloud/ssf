@@ -54,9 +54,10 @@ func EmitKilnManifest(p *Pipeline) (*kiln.Pipeline, error) {
 	// to absolute paths now so each per-target sandbox cwd doesn't break
 	// references — see the per-target sandbox note in the function doc.
 	state := emitState{
-		artifactRef: absolutizeIfLocal(p.Artifact.Type, p.Artifact.Reference),
-		signingKey:  absolutizeKey(p.Signing.Key),
-		sbomPath:    "", // set by sbom step if it runs
+		artifactType: p.Artifact.Type,
+		artifactRef:  absolutizeIfLocal(p.Artifact.Type, p.Artifact.Reference),
+		signingKey:   absolutizeKey(p.Signing.Key),
+		sbomPath:     "", // set by sbom step if it runs
 	}
 
 	for _, step := range p.Steps {
@@ -79,9 +80,10 @@ func EmitKilnManifest(p *Pipeline) (*kiln.Pipeline, error) {
 // and signing key (set once at pipeline scope) and the sbom output path (set
 // by the sbom step, consumed by attest steps that include an sbom predicate).
 type emitState struct {
-	artifactRef string
-	signingKey  string
-	sbomPath    string
+	artifactType artifact.Type
+	artifactRef  string
+	signingKey   string
+	sbomPath     string
 }
 
 // canonicalName returns the kiln target name for a given step. The first
@@ -110,10 +112,27 @@ func emitStep(step Step, name string, state *emitState, produced map[StepKind]st
 		}, nil
 
 	case StepSign:
+		var code string
+		key := translateKeyForShell(state.signingKey)
+		switch state.artifactType {
+		case artifact.TypeOCI:
+			// Cosign resolves tags to digests; prefer the reference as given.
+			if key == "" {
+				code = fmt.Sprintf("cosign sign --yes %s", shellQuote(state.artifactRef))
+			} else {
+				code = fmt.Sprintf("cosign sign --yes --key %s %s", shellQuote(key), shellQuote(state.artifactRef))
+			}
+		default:
+			if key == "" {
+				code = fmt.Sprintf("cosign sign-blob --yes --bundle %s.sigstore.json %s", shellQuote(state.artifactRef), shellQuote(state.artifactRef))
+			} else {
+				code = fmt.Sprintf("cosign sign-blob --yes --key %s --bundle %s.sigstore.json %s", shellQuote(key), shellQuote(state.artifactRef), shellQuote(state.artifactRef))
+			}
+		}
 		return kiln.Target{
 			Run: kiln.ShellBlock{
 				Interpreter: "bash",
-				Code:        fmt.Sprintf("cosign sign-blob --yes --key %s --output-signature %s.sig %s", shellQuote(translateKeyForShell(state.signingKey)), shellQuote(state.artifactRef), shellQuote(state.artifactRef)),
+				Code:        code,
 			},
 			Inputs:  []string{"artifact_ref", "signing_key"},
 			Outputs: []string{"signature"},
@@ -124,19 +143,27 @@ func emitStep(step Step, name string, state *emitState, produced map[StepKind]st
 		if !ok {
 			return kiln.Target{}, fmt.Errorf("verify step requires a prior sign step")
 		}
-		// --insecure-ignore-tlog is required when verifying without
-		// having uploaded to Rekor — cosign 2.x defaults to demanding
-		// a transparency log entry. The log step (when present) handles
-		// the upload separately; if the user wants Rekor-backed
-		// verification they should add a `log` step after `sign`.
+		var code string
+		vkey := verifyKeyForShell(state.signingKey)
+		switch state.artifactType {
+		case artifact.TypeOCI:
+			code = fmt.Sprintf("cosign verify --key %s %s", shellQuote(vkey), shellQuote(state.artifactRef))
+		default:
+			// --insecure-ignore-tlog is required when verifying without
+			// having uploaded to Rekor — cosign 2.x defaults to demanding
+			// a transparency log entry. The log step (when present) handles
+			// the upload separately; if the user wants Rekor-backed
+			// verification they should add a `log` step after `sign`.
+			code = fmt.Sprintf("cosign verify-blob --insecure-ignore-tlog --key %s --bundle %s.sigstore.json %s",
+				shellQuote(vkey),
+				shellQuote(state.artifactRef),
+				shellQuote(state.artifactRef))
+		}
 		return kiln.Target{
 			Requires: []string{signTarget},
 			Run: kiln.ShellBlock{
 				Interpreter: "bash",
-				Code: fmt.Sprintf("cosign verify-blob --insecure-ignore-tlog --key %s --signature %s.sig %s",
-					shellQuote(verifyKeyForShell(state.signingKey)),
-					shellQuote(state.artifactRef),
-					shellQuote(state.artifactRef)),
+				Code:        code,
 			},
 			Inputs: []string{"artifact_ref", "signing_key"},
 		}, nil
@@ -154,9 +181,6 @@ func emitStep(step Step, name string, state *emitState, produced map[StepKind]st
 		for _, pred := range step.Predicates {
 			switch pred.Type {
 			case PredicateSLSAProvenance:
-				// kiln/cosign generates this from build env; we don't
-				// have provenance generation yet — emit a stubbed line
-				// the user can replace until 2.4d wires kiln materials.
 				predLines = append(predLines, "# attest: slsa-provenance predicate generation lands in a future phase")
 			case PredicateSBOM:
 				if sbomTarget, ok := produced[StepSBOM]; ok {
@@ -164,17 +188,33 @@ func emitStep(step Step, name string, state *emitState, produced map[StepKind]st
 				} else {
 					return kiln.Target{}, fmt.Errorf("attest step references sbom predicate but no prior sbom step ran")
 				}
-				predLines = append(predLines,
-					fmt.Sprintf("cosign attest-blob --yes --key %s --predicate %s --type spdxjson %s",
-						shellQuote(translateKeyForShell(state.signingKey)),
-						shellQuote(absolutizePath(pred.Source)),
-						shellQuote(state.artifactRef)))
+				if state.artifactType == artifact.TypeOCI {
+					predLines = append(predLines,
+						fmt.Sprintf("cosign attest --yes --key %s --predicate %s --type spdxjson %s",
+							shellQuote(translateKeyForShell(state.signingKey)),
+							shellQuote(absolutizePath(pred.Source)),
+							shellQuote(state.artifactRef)))
+				} else {
+					predLines = append(predLines,
+						fmt.Sprintf("cosign attest-blob --yes --key %s --predicate %s --type spdxjson %s",
+							shellQuote(translateKeyForShell(state.signingKey)),
+							shellQuote(absolutizePath(pred.Source)),
+							shellQuote(state.artifactRef)))
+				}
 			case PredicateCustom:
-				predLines = append(predLines,
-					fmt.Sprintf("cosign attest-blob --yes --key %s --predicate %s --type custom %s",
-						shellQuote(translateKeyForShell(state.signingKey)),
-						shellQuote(absolutizePath(pred.Source)),
-						shellQuote(state.artifactRef)))
+				if state.artifactType == artifact.TypeOCI {
+					predLines = append(predLines,
+						fmt.Sprintf("cosign attest --yes --key %s --predicate %s --type custom %s",
+							shellQuote(translateKeyForShell(state.signingKey)),
+							shellQuote(absolutizePath(pred.Source)),
+							shellQuote(state.artifactRef)))
+				} else {
+					predLines = append(predLines,
+						fmt.Sprintf("cosign attest-blob --yes --key %s --predicate %s --type custom %s",
+							shellQuote(translateKeyForShell(state.signingKey)),
+							shellQuote(absolutizePath(pred.Source)),
+							shellQuote(state.artifactRef)))
+				}
 			}
 		}
 		return kiln.Target{

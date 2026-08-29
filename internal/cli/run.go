@@ -133,17 +133,23 @@ func runPipeline(yamlPath string, dryRun, noSandbox bool) error {
 	return nil
 }
 
-// resolveDigest computes the artifact's content digest when possible. Only
-// binary is wired in 2.4c.2; other types fall back to whatever the user
+// resolveDigest computes the artifact's content digest when possible.
+// Binary and OCI are wired; other types fall back to whatever the user
 // declared in ssf.yaml or the empty string.
 func resolveDigest(pl *pipeline.Pipeline) string {
 	if pl.Artifact.Digest != "" {
 		return pl.Artifact.Digest
 	}
-	if pl.Artifact.Type == artifact.TypeBinary {
+	switch pl.Artifact.Type {
+	case artifact.TypeBinary:
 		bin, err := artifact.NewBinary(pl.Artifact.Reference)
 		if err == nil {
 			return bin.Digest()
+		}
+	case artifact.TypeOCI:
+		img, err := artifact.NewOCI(pl.Artifact.Reference)
+		if err == nil {
+			return img.Digest()
 		}
 	}
 	return ""

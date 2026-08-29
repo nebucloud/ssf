@@ -58,6 +58,36 @@ pipeline:
 	}
 }
 
+func TestEmitKilnManifest_OCISign(t *testing.T) {
+	src := `
+version: "1"
+artifact:
+  type: oci
+  reference: "phoenixvlabs/nexus-console:v0.1.0"
+signing:
+  key: file://cosign.key
+pipeline:
+  - step: sign
+  - step: verify
+`
+	p, err := Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	m, err := EmitKilnManifest(p)
+	if err != nil {
+		t.Fatalf("EmitKilnManifest: %v", err)
+	}
+	signTarget := m.Targets["sign"]
+	if !strings.Contains(signTarget.Run.Code, "cosign sign ") || strings.Contains(signTarget.Run.Code, "sign-blob") {
+		t.Fatalf("OCI sign should use cosign sign, got %q", signTarget.Run.Code)
+	}
+	verifyTarget := m.Targets["verify"]
+	if !strings.Contains(verifyTarget.Run.Code, "cosign verify ") || strings.Contains(verifyTarget.Run.Code, "verify-blob") {
+		t.Fatalf("OCI verify should use cosign verify, got %q", verifyTarget.Run.Code)
+	}
+}
+
 // TestEmitKilnManifest_DAG asserts the requires edges line up with the DAG in
 // SSF-ARCH-overview §7: verify→sign, attest→{sign,sbom}, log→attest.
 func TestEmitKilnManifest_DAG(t *testing.T) {

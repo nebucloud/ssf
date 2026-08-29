@@ -13,13 +13,14 @@ func newVerifyCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify <artifact>",
 		Short: "Verify an artifact signature with cosign",
-		Long: `Verify an artifact signature using cosign verify-blob.
+		Long: `Verify an artifact signature using cosign.
 
-Mirrors the sign dispatch — Phase 2.4b only wires the binary type, which
-shells to ` + "`cosign verify-blob`" + ` against the conventionally-located
-<path>.sig sidecar.
+Dispatch:
+  • existing file path → cosign verify-blob against <path>.sigstore.json
+  • registry reference → cosign verify against the OCI signature sibling
 
-Without --key, cosign uses the same default key discovery as ` + "`ssf sign`" + `.`,
+Without --key, cosign uses the same default key discovery as ` + "`ssf sign`" + `.
+Keyed blob verification requires an explicit --key.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runVerify(args[0], keyRef)
@@ -29,8 +30,8 @@ Without --key, cosign uses the same default key discovery as ` + "`ssf sign`" + 
 	return cmd
 }
 
-func runVerify(path, keyRef string) error {
-	bin, err := artifact.NewBinary(path)
+func runVerify(ref, keyRef string) error {
+	art, err := artifact.Open(ref)
 	if err != nil {
 		return err
 	}
@@ -39,26 +40,43 @@ func runVerify(path, keyRef string) error {
 	if err != nil {
 		return err
 	}
-	if cosignKey == "" {
-		// cosign verify-blob requires --key for keyed signatures; if the
-		// user didn't supply one and we can't derive a default, fail
-		// fast with a clear hint instead of cosign's generic error.
-		return fmt.Errorf("verify requires --key (e.g., --key cosign.pub or --key file:///path/to/cosign.pub)")
-	}
 
-	args := []string{
-		"verify-blob",
-		"--key", cosignKey,
-		"--signature", bin.SignaturePath(),
-		bin.Reference(),
-	}
+	switch a := art.(type) {
+	case *artifact.Binary:
+		if cosignKey == "" {
+			return fmt.Errorf("verify requires --key (e.g., --key cosign.pub or --key file:///path/to/cosign.pub)")
+		}
+		args := []string{
+			"verify-blob",
+			"--key", cosignKey,
+			"--bundle", a.BundlePath(),
+			"--insecure-ignore-tlog",
+			a.Reference(),
+		}
+		if err := runCosign(args...); err != nil {
+			return err
+		}
+		fmt.Printf("verified %s\n", a.Reference())
+		fmt.Printf("  type:      %s\n", a.Type())
+		fmt.Printf("  digest:    %s\n", a.Digest())
+		fmt.Printf("  bundle:    %s\n", a.BundlePath())
+		return nil
 
-	if err := runCosign(args...); err != nil {
-		return err
-	}
+	case *artifact.OCI:
+		if cosignKey == "" {
+			return fmt.Errorf("verify requires --key (e.g., --key cosign.pub or --key file:///path/to/cosign.pub)")
+		}
+		args := []string{"verify", "--key", cosignKey, a.DigestRef()}
+		if err := runCosign(args...); err != nil {
+			return err
+		}
+		fmt.Printf("verified %s\n", a.Reference())
+		fmt.Printf("  type:      %s\n", a.Type())
+		fmt.Printf("  digest:    %s\n", a.Digest())
+		fmt.Printf("  digestRef: %s\n", a.DigestRef())
+		return nil
 
-	fmt.Printf("verified %s\n", bin.Reference())
-	fmt.Printf("  digest:    %s\n", bin.Digest())
-	fmt.Printf("  signature: %s\n", bin.SignaturePath())
-	return nil
+	default:
+		return fmt.Errorf("verify: unsupported artifact type %s", art.Type())
+	}
 }

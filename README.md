@@ -12,14 +12,22 @@ See [SSF-ARCH-overview](https://github.com/nebucloud/docs/blob/main/SSF-ARCH-ove
 
 ## Status
 
-Phase 2.4a — scaffold complete. Every subcommand is registered and shows in `ssf --help`; handlers return a "not yet implemented" error pointing at the phase that lands them.
+Phases 2.4a–d complete for the binary path. **OCI** artifact type is wired for
+`ssf sign` / `ssf verify` and kiln emit (`cosign sign` / `cosign verify`).
 
 | Phase | Scope | Status |
 |-------|-------|--------|
-| 2.4a | Go module, cobra CLI tree, `Artifact` interface | ✅ this commit |
-| 2.4b | First artifact type (binary), `ssf sign` / `ssf verify` | pending |
-| 2.4c | `ssf.yaml` parser → kiln JSON manifest emitter, `ssf run`, `ssf init`, attest/sbom/log | pending |
-| 2.4d | CUE policy library, `ssf policy check`, structured report | pending |
+| 2.4a | Go module, cobra CLI tree, `Artifact` interface | ✅ |
+| 2.4b | Binary artifact, `ssf sign` / `ssf verify` (sign-blob) | ✅ |
+| 2.4c | `ssf.yaml` → kiln JSON, `ssf run` / `init` / attest / sbom / log | ✅ |
+| 2.4d | CUE policy library, `ssf policy check`, structured report | ✅ |
+| OCI | Registry images: digest resolve + `cosign sign` / `verify` | ✅ |
+
+```sh
+ssf sign --key file://cosign.key ghcr.io/org/image:v0.1.0
+ssf verify --key file://cosign.pub ghcr.io/org/image:v0.1.0
+ssf run --dry-run testdata/sample-oci.ssf.yaml
+```
 
 ## Build
 

@@ -13,15 +13,17 @@ func newSignCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sign <artifact>",
 		Short: "Sign an artifact with cosign",
-		Long: `Sign an artifact with cosign and store the signature alongside it.
+		Long: `Sign an artifact with cosign.
 
-In Phase 2.4b only the binary artifact type is wired — ssf shells to
-` + "`cosign sign-blob`" + ` and writes the signature to <path>.sig. Other types
-(oci, crate, npm, derivation, blob) land alongside their dispatch in
-later phases.
+Dispatch:
+  • existing file path → cosign sign-blob → <path>.sigstore.json (binary)
+  • registry reference → cosign sign against the manifest digest (oci)
 
 Without --key, cosign uses its default key discovery (COSIGN_PASSWORD env,
-~/.config/sigstore/cosign.key, KMS, or interactive prompt).`,
+~/.config/sigstore/cosign.key, KMS, or interactive prompt).
+
+OCI images must be reachable in a registry (digest resolved via crane or
+docker). Local-only images need a push first.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSign(args[0], keyRef)
@@ -31,8 +33,8 @@ Without --key, cosign uses its default key discovery (COSIGN_PASSWORD env,
 	return cmd
 }
 
-func runSign(path, keyRef string) error {
-	bin, err := artifact.NewBinary(path)
+func runSign(ref, keyRef string) error {
+	art, err := artifact.Open(ref)
 	if err != nil {
 		return err
 	}
@@ -42,21 +44,38 @@ func runSign(path, keyRef string) error {
 		return err
 	}
 
-	args := []string{"sign-blob", "--yes", "--output-signature", bin.SignaturePath()}
-	if cosignKey != "" {
-		args = append(args, "--key", cosignKey)
-	}
-	args = append(args, bin.Reference())
+	switch a := art.(type) {
+	case *artifact.Binary:
+		args := []string{"sign-blob", "--yes", "--bundle", a.BundlePath()}
+		if cosignKey != "" {
+			args = append(args, "--key", cosignKey)
+		}
+		args = append(args, a.Reference())
+		if err := runCosign(args...); err != nil {
+			return err
+		}
+		fmt.Printf("signed %s\n", a.Reference())
+		fmt.Printf("  type:      %s\n", a.Type())
+		fmt.Printf("  digest:    %s\n", a.Digest())
+		fmt.Printf("  bundle:    %s\n", a.BundlePath())
+		return nil
 
-	if err := runCosign(args...); err != nil {
-		return err
-	}
+	case *artifact.OCI:
+		args := []string{"sign", "--yes"}
+		if cosignKey != "" {
+			args = append(args, "--key", cosignKey)
+		}
+		args = append(args, a.DigestRef())
+		if err := runCosign(args...); err != nil {
+			return err
+		}
+		fmt.Printf("signed %s\n", a.Reference())
+		fmt.Printf("  type:      %s\n", a.Type())
+		fmt.Printf("  digest:    %s\n", a.Digest())
+		fmt.Printf("  digestRef: %s\n", a.DigestRef())
+		return nil
 
-	// Surface the artifact's content digest and the resulting signature
-	// path on stdout so the caller can pipe to a follow-up step (verify,
-	// upload, attest) without reparsing the file system.
-	fmt.Printf("signed %s\n", bin.Reference())
-	fmt.Printf("  digest:    %s\n", bin.Digest())
-	fmt.Printf("  signature: %s\n", bin.SignaturePath())
-	return nil
+	default:
+		return fmt.Errorf("sign: unsupported artifact type %s", art.Type())
+	}
 }

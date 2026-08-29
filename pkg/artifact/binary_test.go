@@ -59,6 +59,10 @@ func TestNewBinary_HappyPath(t *testing.T) {
 		t.Errorf("SignaturePath() = %q, want %q", got, want)
 	}
 
+	if got, want := b.BundlePath(), path+".sigstore.json"; got != want {
+		t.Errorf("BundlePath() = %q, want %q", got, want)
+	}
+
 	md := b.Metadata()
 	if got, want := md["filename"], "fixture.bin"; got != want {
 		t.Errorf("metadata.filename = %q, want %q", got, want)
