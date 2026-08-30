@@ -29,41 +29,20 @@ ssf verify --key file://cosign.pub ghcr.io/org/image:v0.1.0
 ssf run --dry-run testdata/sample-oci.ssf.yaml
 ```
 
+## Install
+
+```sh
+go install github.com/nebucloud/ssf/cmd/ssf@latest
+```
+
+Requires a Go toolchain on `PATH`. Cosign must be available for OCI sign/verify.
+
 ## Build
 
 ```sh
 go build ./cmd/ssf
 ./ssf --help
 ```
-
-## Repository layout
-
-```
-ssf/
-├── cmd/
-│   └── ssf/
-│       └── main.go              # binary entrypoint
-├── internal/
-│   └── cli/
-│       ├── root.go              # cobra root + subcommand registration
-│       ├── stub.go              # shared "not yet implemented" handler
-│       ├── sign.go
-│       ├── verify.go
-│       ├── attest.go
-│       ├── sbom.go
-│       ├── log.go
-│       ├── policy.go            # `policy {check,list,validate,explain,schema}`
-│       ├── run.go
-│       └── init.go
-├── pkg/
-│   └── artifact/
-│       ├── artifact.go          # public Artifact interface + Type constants
-│       └── artifact_test.go
-├── go.mod
-└── go.sum
-```
-
-`internal/cli` is implementation detail of the binary. `pkg/artifact` is the only public surface for now — external Go consumers (the future SSF MCP server in Conductor, third-party policy tooling, etc.) import it directly.
 
 ## License
 
